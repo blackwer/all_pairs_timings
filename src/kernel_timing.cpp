@@ -100,7 +100,7 @@ int main(int argc, char *argv[]) {
     static auto memmgr = pvfmm::mem::MemoryManager(10000000);
 
     // Construct tree.
-    size_t max_pts = 600;
+    size_t max_pts = 2000;
     int mult_order = 8;
 
     const pvfmm::Kernel<float> &kernel_fn_f = pvfmm::StokesKernel<float>::velocity();
@@ -129,12 +129,16 @@ int main(int argc, char *argv[]) {
 
     // FMM Setup
     tree_f->SetupFMM(&matrices_f);
+    timer.stop();
+    int tree_time = timer.elapsedMilliseconds();
 
     // Run FMM
+    timer.start();
     std::vector<float> u_fmm_f;
     PtFMM_Evaluate(tree_f, u_fmm_f, n_trg);
     timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
+    int eval_time = timer.elapsedMilliseconds();
+    std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
 
     timer.start();
     auto *tree_d = PtFMM_CreateTree(r_src_d_vec, r_src_d_vec, dummy_d, dummy_d, r_src_d_vec, MPI_COMM_WORLD, max_pts,
@@ -142,12 +146,16 @@ int main(int argc, char *argv[]) {
 
     // FMM Setup
     tree_d->SetupFMM(&matrices_d);
+    timer.stop();
+    tree_time = timer.elapsedMilliseconds();
 
+    timer.start();
     // Run FMM
     std::vector<double> u_fmm_d;
     PtFMM_Evaluate(tree_d, u_fmm_d, n_trg);
     timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
+    eval_time = timer.elapsedMilliseconds();
+    std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
 
     return 0;
 }
