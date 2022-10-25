@@ -1,6 +1,7 @@
 #ifndef TIMER_HPP
 #define TIMER_HPP
 
+#include <chrono>
 class Timer {
   public:
     void start() {
@@ -13,7 +14,7 @@ class Timer {
         m_bRunning = false;
     }
 
-    double elapsedMilliseconds() {
+    double mSec() {
         std::chrono::time_point<std::chrono::system_clock> endTime;
 
         if (m_bRunning) {
@@ -22,10 +23,10 @@ class Timer {
             endTime = m_EndTime;
         }
 
-        return std::chrono::duration_cast<std::chrono::milliseconds>(endTime - m_StartTime).count();
+        return std::chrono::duration_cast<std::chrono::microseconds>(endTime - m_StartTime).count() / 1000.0;
     }
 
-    double elapsedSeconds() { return elapsedMilliseconds() / 1000.0; }
+    double elapsedSeconds() { return mSec() / 1000.0; }
 
   private:
     std::chrono::time_point<std::chrono::system_clock> m_StartTime;

@@ -1,10 +1,7 @@
 #include <Eigen/Core>
 
-#include <chrono>
-#include <cstdlib>
 #include <iostream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <pvfmm.hpp>
@@ -85,10 +82,11 @@ std::vector<T> mat2vec(const MatRef<T> &src) {
     return res;
 }
 
-void print_meas(const std::string &device, const std::string &precision, int n_trg, int tree, int eval, int tot) {
+void print_meas(const std::string &device, const std::string &algo, const std::string &precision, int n_trg,
+                double tree, double eval, double tot) {
     using std::to_string;
-    std::cout << device + "," + precision + "," + to_string(n_trg) + "," + to_string(tree) + "," + to_string(eval) +
-                     "," + to_string(tot) + "\n";
+    std::cout << device + "," + algo + "," + precision + "," + to_string(n_trg) + "," + to_string(tree) + "," +
+                     to_string(eval) + "," + to_string(tot) + "\n";
 }
 
 int main(int argc, char *argv[]) {
@@ -96,8 +94,24 @@ int main(int argc, char *argv[]) {
     MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &thread_level);
     auto memmgr = pvfmm::mem::MemoryManager(10000000);
 
+    std::vector<int> n_trgs;
+    for (int i = 1; i < argc; ++i)
+        n_trgs.push_back(std::stoi(argv[i]));
+
+    {
+        // Warmup!
+        int n_src = 1000;
+        int n_trg = n_src;
+        Mat<double> r_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
+        Mat<double> f_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
+        Mat<double> r_trg_d = 0.5 * (Mat<double>::Random(3, n_trg) + Mat<double>::Ones(3, n_trg));
+
+        stokeslet_direct_cpu<double>(r_src_d, r_trg_d, f_src_d);
+        stokeslet_direct_gpu_tiled(r_src_d, f_src_d, r_trg_d);
+    }
+
     std::cout << "Device,precision,ntrg,tree,eval,tot\n";
-    for (const auto &n_trg : {1000, 10000, 100000, 1000000}) {
+    for (const auto &n_trg : n_trgs) {
         int n_src = n_trg;
         Mat<double> r_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
         Mat<double> f_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
@@ -107,40 +121,38 @@ int main(int argc, char *argv[]) {
         Mat<float> f_src_f = f_src_d.cast<float>().eval();
         Mat<float> r_trg_f = r_trg_d.cast<float>().eval();
 
-        // Warmup!
-        stokeslet_direct_gpu_tiled(r_src_f, f_src_f, r_trg_f);
-
+    
         Timer timer;
 
         timer.start();
         Mat<float> u_float = stokeslet_direct_cpu<float>(r_src_f, r_trg_f, f_src_f);
         timer.stop();
-        print_meas("cpu", "float", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("cpu", "blocked", "float", n_trg, 0, timer.mSec(), timer.mSec());
 
         timer.start();
         Mat<double> u_double = stokeslet_direct_cpu<double>(r_src_d, r_trg_d, f_src_d);
         timer.stop();
-        print_meas("cpu", "double", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("cpu", "blocked", "double", n_trg, 0, timer.mSec(), timer.mSec());
 
         timer.start();
         Mat<float> u_float_gpu_untiled = stokeslet_direct_gpu_untiled(r_src_f, f_src_f, r_trg_f);
         timer.stop();
-        print_meas("gpu_untiled", "float", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("gpu", "direct", "float", n_trg, 0, timer.mSec(), timer.mSec());
 
         timer.start();
         Mat<double> u_double_gpu_untiled = stokeslet_direct_gpu_untiled(r_src_d, f_src_d, r_trg_d);
         timer.stop();
-        print_meas("gpu_untiled", "double", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("gpu", "direct","double", n_trg, 0, timer.mSec(), timer.mSec());
 
         timer.start();
         Mat<float> u_float_gpu_tiled = stokeslet_direct_gpu_tiled(r_src_f, f_src_f, r_trg_f);
         timer.stop();
-        print_meas("gpu_tiled", "float", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("gpu", "blocked", "float", n_trg, 0, timer.mSec(), timer.mSec());
 
         timer.start();
         Mat<double> u_double_gpu_tiled = stokeslet_direct_gpu_tiled(r_src_d, f_src_d, r_trg_d);
         timer.stop();
-        print_meas("gpu_tiled", "double", n_trg, 0, timer.elapsedMilliseconds(), timer.elapsedMilliseconds());
+        print_meas("gpu", "blocked", "double", n_trg, 0, timer.mSec(), timer.mSec());
 
         // Construct tree.
         size_t max_pts = 2000;
@@ -173,15 +185,15 @@ int main(int argc, char *argv[]) {
         // FMM Setup
         tree_f->SetupFMM(&matrices_f);
         timer.stop();
-        int tree_time = timer.elapsedMilliseconds();
+        auto tree_time = timer.mSec();
 
         // Run FMM
         timer.start();
         std::vector<float> u_fmm_f;
         PtFMM_Evaluate(tree_f, u_fmm_f, n_trg);
         timer.stop();
-        int eval_time = timer.elapsedMilliseconds();
-        print_meas("fmm", "float", n_trg, tree_time, eval_time, tree_time + eval_time);
+        auto eval_time = timer.mSec();
+        print_meas("cpu", "fmm", "float", n_trg, tree_time, eval_time, tree_time + eval_time);
 
         timer.start();
         auto *tree_d = PtFMM_CreateTree(r_src_d_vec, r_src_d_vec, dummy_d, dummy_d, r_src_d_vec, MPI_COMM_WORLD,
@@ -190,15 +202,15 @@ int main(int argc, char *argv[]) {
         // FMM Setup
         tree_d->SetupFMM(&matrices_d);
         timer.stop();
-        tree_time = timer.elapsedMilliseconds();
+        tree_time = timer.mSec();
 
         timer.start();
         // Run FMM
         std::vector<double> u_fmm_d;
         PtFMM_Evaluate(tree_d, u_fmm_d, n_trg);
         timer.stop();
-        eval_time = timer.elapsedMilliseconds();
-        print_meas("fmm", "double", n_trg, tree_time, eval_time, tree_time + eval_time);
+        eval_time = timer.mSec();
+        print_meas("cpu", "fmm", "double", n_trg, tree_time, eval_time, tree_time + eval_time);
     }
     return 0;
 }
