@@ -110,7 +110,7 @@ int main(int argc, char *argv[]) {
         stokeslet_direct_gpu_tiled(r_src_d, f_src_d, r_trg_d);
     }
 
-    std::cout << "Device,precision,ntrg,tree,eval,tot\n";
+    std::cout << "device,algo,prec,ntrg,tree,eval,tot\n";
     for (const auto &n_trg : n_trgs) {
         int n_src = n_trg;
         Mat<double> r_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
