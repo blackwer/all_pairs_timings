@@ -1,6 +1,8 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
+#include "kernels.hpp"
+
 namespace kernels {
 
 #define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
@@ -32,7 +34,7 @@ struct StokesCuda : GenericCudaKernel<T, 3, 3> {
         dr[0] = rj[0] - ri[0];
         dr[1] = rj[1] - ri[1];
         dr[2] = rj[2] - ri[2];
-        
+
         T r2 = dr[0] * dr[0] + dr[1] * dr[1] + dr[2] * dr[2];
         const T rinv = r2 == 0.0 ? 0.0 : rsqrt(r2);
         T rinv2 = rinv * rinv;
@@ -112,9 +114,9 @@ __global__ void untiled_driver(const typename kernel::floattype *r_src, const ty
         u_trg[i_trg * kernel::trgdim + i] *= kernel::scale_factor;
 }
 
-template <typename kernel>
-void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename kernel::floattype *f_src, int n_src, const typename kernel::floattype *r_trg, typename kernel::floattype *u_trg,
-                       int n_trg) {
+template <typename kernel, DRIVER driver>
+void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename kernel::floattype *f_src, int n_src,
+                       const typename kernel::floattype *r_trg, typename kernel::floattype *u_trg, int n_trg) {
     const int block_size = 32;
     const int n_blocks = (n_trg + block_size - 1) / block_size;
     using T = typename kernel::floattype;
@@ -132,10 +134,12 @@ void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename k
 
     int n_tiles = (n_src + block_size - 1) / block_size;
     int shared_mem_size = block_size * (3 + kernel::srcdim) * sizeof(T);
-    tiled_driver<kernel><<<n_blocks, block_size, shared_mem_size>>>(r_src_device, r_trg_device, u_trg_device,
-                                                                    f_src_device, n_src, n_trg, n_tiles);
-    // untiled_driver<kernel><<<n_blocks, block_size>>>(r_src_device, r_trg_device, u_trg_device, f_src_device, n_src,
-    // n_trg);
+    if constexpr (driver == TILED)
+        tiled_driver<kernel><<<n_blocks, block_size, shared_mem_size>>>(r_src_device, r_trg_device, u_trg_device,
+                                                                        f_src_device, n_src, n_trg, n_tiles);
+    else
+        untiled_driver<kernel>
+            <<<n_blocks, block_size>>>(r_src_device, r_trg_device, u_trg_device, f_src_device, n_src, n_trg);
 
     checkCudaErrors(cudaMemcpy(u_trg, u_trg_device, sizeof(T) * n_trg * kernel::trgdim, cudaMemcpyDeviceToHost));
 
@@ -145,14 +149,24 @@ void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename k
     cudaFree(r_trg_device);
 }
 
-void stokeslet_direct_gpu(const double *r_src, const double *f_src, int n_src, const double *r_trg, double *u_trg,
-                               int n_trg) {
-    kernel_direct_gpu<StokesCuda<double>>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
+void stokeslet_direct_gpu_tiled(const double *r_src, const double *f_src, int n_src, const double *r_trg, double *u_trg,
+                                int n_trg) {
+    kernel_direct_gpu<StokesCuda<double>, TILED>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
 }
 
-void stokeslet_direct_gpu(const float *r_src, const float *f_src, int n_src, const float *r_trg, float *u_trg,
-                          int n_trg) {
-    kernel_direct_gpu<StokesCuda<float>>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
+void stokeslet_direct_gpu_tiled(const float *r_src, const float *f_src, int n_src, const float *r_trg, float *u_trg,
+                                int n_trg) {
+    kernel_direct_gpu<StokesCuda<float>, TILED>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
+}
+
+void stokeslet_direct_gpu_untiled(const double *r_src, const double *f_src, int n_src, const double *r_trg,
+                                  double *u_trg, int n_trg) {
+    kernel_direct_gpu<StokesCuda<double>, UNTILED>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
+}
+
+void stokeslet_direct_gpu_untiled(const float *r_src, const float *f_src, int n_src, const float *r_trg, float *u_trg,
+                                  int n_trg) {
+    kernel_direct_gpu<StokesCuda<float>, UNTILED>(r_src, f_src, n_src, r_trg, u_trg, n_trg);
 }
 
 } // namespace kernels

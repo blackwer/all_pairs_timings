@@ -6,7 +6,7 @@
 
 #include <pvfmm.hpp>
 
-#include "kernels.h"
+#include "kernels.hpp"
 #include "timer.hpp"
 
 template <typename T>
@@ -14,6 +14,39 @@ using Mat = Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic>;
 
 template <typename T>
 using MatRef = Eigen::Ref<Mat<T>>;
+
+Mat<double> stokeslet_direct_gpu_tiled(const MatRef<double> &r_src, const MatRef<double> &f_src,
+                                       const MatRef<double> &r_trg) {
+    Mat<double> u_trg = Mat<double>::Zero(3, r_trg.cols());
+    kernels::stokeslet_direct_gpu_tiled(r_src.data(), f_src.data(), r_src.cols(), r_trg.data(), u_trg.data(),
+                                        u_trg.cols());
+    return u_trg;
+}
+
+Mat<double> stokeslet_direct_gpu_untiled(const MatRef<double> &r_src, const MatRef<double> &f_src,
+                                         const MatRef<double> &r_trg) {
+    Mat<double> u_trg = Mat<double>::Zero(3, r_trg.cols());
+    kernels::stokeslet_direct_gpu_untiled(r_src.data(), f_src.data(), r_src.cols(), r_trg.data(), u_trg.data(),
+                                          u_trg.cols());
+    return u_trg;
+}
+
+Mat<float> stokeslet_direct_gpu_tiled(const MatRef<float> &r_src, const MatRef<float> &f_src,
+                                      const MatRef<float> &r_trg) {
+    Mat<float> u_trg = Mat<float>::Zero(3, r_trg.cols());
+
+    kernels::stokeslet_direct_gpu_tiled(r_src.data(), f_src.data(), r_src.cols(), r_trg.data(), u_trg.data(),
+                                        u_trg.cols());
+    return u_trg;
+}
+
+Mat<float> stokeslet_direct_gpu_untiled(const MatRef<float> &r_src, const MatRef<float> &f_src,
+                                        const MatRef<float> &r_trg) {
+    Mat<float> u_trg = Mat<float>::Zero(3, r_trg.cols());
+    kernels::stokeslet_direct_gpu_untiled(r_src.data(), f_src.data(), r_src.cols(), r_trg.data(), u_trg.data(),
+                                          u_trg.cols());
+    return u_trg;
+}
 
 inline std::pair<int, int> get_chunk_start_and_size(int i_thr, int n_thr, int prob_size) {
     const int chunk_small = prob_size / n_thr;
@@ -52,110 +85,111 @@ std::vector<T> mat2vec(const MatRef<T> &src) {
 int main(int argc, char *argv[]) {
     int thread_level;
     MPI_Init_thread(&argc, &argv, MPI_THREAD_FUNNELED, &thread_level);
+    auto memmgr = pvfmm::mem::MemoryManager(10000000);
 
-    if (argc != 3)
-        return EXIT_FAILURE;
+    std::vector trgs{1000, 10000, 100000, 1000000};
+    for (const auto &n_trg : trgs) {
+        int n_src = n_trg;
+        Mat<double> r_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
+        Mat<double> f_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
+        Mat<double> r_trg_d = 0.5 * (Mat<double>::Random(3, n_trg) + Mat<double>::Ones(3, n_trg));
 
-    int n_src = atoi(argv[1]);
-    int n_trg = atoi(argv[2]);
+        Mat<float> r_src_f = r_src_d.cast<float>();
+        Mat<float> f_src_f = f_src_d.cast<float>();
+        Mat<float> r_trg_f = r_trg_d.cast<float>();
 
-    Mat<double> r_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
-    Mat<double> f_src_d = 0.5 * (Mat<double>::Random(3, n_src) + Mat<double>::Ones(3, n_src));
-    Mat<double> r_trg_d = 0.5 * (Mat<double>::Random(3, n_trg) + Mat<double>::Ones(3, n_trg));
+        // Warmup!
+        stokeslet_direct_gpu_tiled(r_src_f, f_src_f, r_trg_f);
 
-    Mat<float> r_src_f = r_src_d.cast<float>();
-    Mat<float> f_src_f = f_src_d.cast<float>();
-    Mat<float> r_trg_f = r_trg_d.cast<float>();
+        Timer timer;
 
-    // Warmup!
-    for (int i = 0; i < 10; ++i) {
-        Mat<float> u_float_gpu(3, n_trg);
-        kernels::stokeslet_direct_gpu(r_src_f.data(), f_src_f.data(), n_src, r_trg_f.data(), u_float_gpu.data(), n_trg);
+        timer.start();
+        Mat<float> u_float = stokeslet_direct_cpu<float>(r_src_f, r_trg_f, f_src_f);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        timer.start();
+        Mat<double> u_double = stokeslet_direct_cpu<double>(r_src_d, r_trg_d, f_src_d);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        timer.start();
+        Mat<float> u_float_gpu_untiled = stokeslet_direct_gpu_untiled(r_src_f, f_src_f, r_trg_f);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        timer.start();
+        Mat<double> u_double_gpu_untiled = stokeslet_direct_gpu_untiled(r_src_d, f_src_d, r_trg_d);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        timer.start();
+        Mat<float> u_float_gpu_tiled = stokeslet_direct_gpu_tiled(r_src_f, f_src_f, r_trg_f);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        timer.start();
+        Mat<double> u_double_gpu_tiled = stokeslet_direct_gpu_tiled(r_src_d, f_src_d, r_trg_d);
+        timer.stop();
+        std::cout << timer.elapsedMilliseconds() << std::endl;
+
+        // Construct tree.
+        size_t max_pts = 2000;
+        int mult_order = 8;
+
+        const pvfmm::Kernel<float> &kernel_fn_f = pvfmm::StokesKernel<float>::velocity();
+        const pvfmm::Kernel<double> &kernel_fn_d = pvfmm::StokesKernel<double>::velocity();
+
+        // Load matrices.
+        pvfmm::PtFMM<float> matrices_f(&memmgr);
+        matrices_f.Initialize(mult_order, MPI_COMM_WORLD, &kernel_fn_f);
+
+        pvfmm::PtFMM<double> matrices_d(&memmgr);
+        matrices_d.Initialize(mult_order, MPI_COMM_WORLD, &kernel_fn_d);
+
+        auto r_src_f_vec = mat2vec<float>(r_src_f);
+        auto f_src_f_vec = mat2vec<float>(f_src_f);
+        auto r_trg_f_vec = mat2vec<float>(r_trg_f);
+        std::vector<float> dummy_f;
+
+        auto r_src_d_vec = mat2vec<double>(r_src_d);
+        auto f_src_d_vec = mat2vec<double>(f_src_d);
+        auto r_trg_d_vec = mat2vec<double>(r_trg_d);
+        std::vector<double> dummy_d;
+
+        timer.start();
+        auto *tree_f = PtFMM_CreateTree(r_src_f_vec, r_src_f_vec, dummy_f, dummy_f, r_src_f_vec, MPI_COMM_WORLD,
+                                        max_pts, pvfmm::FreeSpace);
+
+        // FMM Setup
+        tree_f->SetupFMM(&matrices_f);
+        timer.stop();
+        int tree_time = timer.elapsedMilliseconds();
+
+        // Run FMM
+        timer.start();
+        std::vector<float> u_fmm_f;
+        PtFMM_Evaluate(tree_f, u_fmm_f, n_trg);
+        timer.stop();
+        int eval_time = timer.elapsedMilliseconds();
+        std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
+
+        timer.start();
+        auto *tree_d = PtFMM_CreateTree(r_src_d_vec, r_src_d_vec, dummy_d, dummy_d, r_src_d_vec, MPI_COMM_WORLD,
+                                        max_pts, pvfmm::FreeSpace);
+
+        // FMM Setup
+        tree_d->SetupFMM(&matrices_d);
+        timer.stop();
+        tree_time = timer.elapsedMilliseconds();
+
+        timer.start();
+        // Run FMM
+        std::vector<double> u_fmm_d;
+        PtFMM_Evaluate(tree_d, u_fmm_d, n_trg);
+        timer.stop();
+        eval_time = timer.elapsedMilliseconds();
+        std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
     }
-
-    Timer timer;
-
-    timer.start();
-    Mat<float> u_float = stokeslet_direct_cpu<float>(r_src_f, r_trg_f, f_src_f);
-    timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
-
-    timer.start();
-    Mat<double> u_double = stokeslet_direct_cpu<double>(r_src_d, r_trg_d, f_src_d);
-    timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
-
-    timer.start();
-    Mat<float> u_float_gpu = u_float;
-    kernels::stokeslet_direct_gpu(r_src_f.data(), f_src_f.data(), n_src, r_trg_f.data(), u_float_gpu.data(), n_trg);
-    timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
-
-    timer.start();
-    Mat<double> u_double_gpu = u_double;
-    kernels::stokeslet_direct_gpu(r_src_d.data(), f_src_d.data(), n_src, r_trg_d.data(), u_double_gpu.data(), n_trg);
-    timer.stop();
-    std::cout << timer.elapsedMilliseconds() << std::endl;
-
-    static auto memmgr = pvfmm::mem::MemoryManager(10000000);
-
-    // Construct tree.
-    size_t max_pts = 2000;
-    int mult_order = 8;
-
-    const pvfmm::Kernel<float> &kernel_fn_f = pvfmm::StokesKernel<float>::velocity();
-    const pvfmm::Kernel<double> &kernel_fn_d = pvfmm::StokesKernel<double>::velocity();
-
-    // Load matrices.
-    pvfmm::PtFMM<float> matrices_f(&memmgr);
-    matrices_f.Initialize(mult_order, MPI_COMM_WORLD, &kernel_fn_f);
-
-    pvfmm::PtFMM<double> matrices_d(&memmgr);
-    matrices_d.Initialize(mult_order, MPI_COMM_WORLD, &kernel_fn_d);
-
-    auto r_src_f_vec = mat2vec<float>(r_src_f);
-    auto f_src_f_vec = mat2vec<float>(f_src_f);
-    auto r_trg_f_vec = mat2vec<float>(r_trg_f);
-    std::vector<float> dummy_f;
-
-    auto r_src_d_vec = mat2vec<double>(r_src_d);
-    auto f_src_d_vec = mat2vec<double>(f_src_d);
-    auto r_trg_d_vec = mat2vec<double>(r_trg_d);
-    std::vector<double> dummy_d;
-
-    timer.start();
-    auto *tree_f = PtFMM_CreateTree(r_src_f_vec, r_src_f_vec, dummy_f, dummy_f, r_src_f_vec, MPI_COMM_WORLD, max_pts,
-                                    pvfmm::FreeSpace);
-
-    // FMM Setup
-    tree_f->SetupFMM(&matrices_f);
-    timer.stop();
-    int tree_time = timer.elapsedMilliseconds();
-
-    // Run FMM
-    timer.start();
-    std::vector<float> u_fmm_f;
-    PtFMM_Evaluate(tree_f, u_fmm_f, n_trg);
-    timer.stop();
-    int eval_time = timer.elapsedMilliseconds();
-    std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
-
-    timer.start();
-    auto *tree_d = PtFMM_CreateTree(r_src_d_vec, r_src_d_vec, dummy_d, dummy_d, r_src_d_vec, MPI_COMM_WORLD, max_pts,
-                                    pvfmm::FreeSpace);
-
-    // FMM Setup
-    tree_d->SetupFMM(&matrices_d);
-    timer.stop();
-    tree_time = timer.elapsedMilliseconds();
-
-    timer.start();
-    // Run FMM
-    std::vector<double> u_fmm_d;
-    PtFMM_Evaluate(tree_d, u_fmm_d, n_trg);
-    timer.stop();
-    eval_time = timer.elapsedMilliseconds();
-    std::cout << tree_time << " " << eval_time << " " << tree_time + eval_time << std::endl;
-
     return 0;
 }
