@@ -132,11 +132,12 @@ void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename k
     checkCudaErrors(cudaMemcpy(r_trg_device, r_trg, 3 * n_trg * sizeof(T), cudaMemcpyHostToDevice));
     checkCudaErrors(cudaMemcpy(f_src_device, f_src, kernel::srcdim * n_src * sizeof(T), cudaMemcpyHostToDevice));
 
-    int n_tiles = (n_src + block_size - 1) / block_size;
-    int shared_mem_size = block_size * (3 + kernel::srcdim) * sizeof(T);
-    if constexpr (driver == TILED)
+    if constexpr (driver == TILED) {
+        int n_tiles = (n_src + block_size - 1) / block_size;
+        int shared_mem_size = block_size * (3 + kernel::srcdim) * sizeof(T);
         tiled_driver<kernel><<<n_blocks, block_size, shared_mem_size>>>(r_src_device, r_trg_device, u_trg_device,
                                                                         f_src_device, n_src, n_trg, n_tiles);
+    }
     else
         untiled_driver<kernel>
             <<<n_blocks, block_size>>>(r_src_device, r_trg_device, u_trg_device, f_src_device, n_src, n_trg);
