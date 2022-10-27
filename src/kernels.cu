@@ -114,7 +114,7 @@ __global__ void untiled_driver(const typename kernel::floattype *r_src, const ty
         u_trg[i_trg * kernel::trgdim + i] *= kernel::scale_factor;
 }
 
-template <typename kernel, DRIVER driver>
+template <typename kernel, Driver driver>
 void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename kernel::floattype *f_src, int n_src,
                        const typename kernel::floattype *r_trg, typename kernel::floattype *u_trg, int n_trg) {
     const int block_size = 32;

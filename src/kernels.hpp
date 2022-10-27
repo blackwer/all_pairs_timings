@@ -2,7 +2,7 @@
 #define KERNELS_HPP
 
 namespace kernels {
-using DRIVER = enum { TILED, UNTILED };
+using Driver = enum { TILED, UNTILED };
 
 void stokeslet_direct_gpu_tiled(const double *r_src, const double *f_src, int n_src, const double *r_trg, double *u_trg,
                                 int n_trg);
