@@ -117,7 +117,7 @@ __global__ void untiled_driver(const typename kernel::floattype *r_src, const ty
 template <typename kernel, Driver driver>
 void kernel_direct_gpu(const typename kernel::floattype *r_src, const typename kernel::floattype *f_src, int n_src,
                        const typename kernel::floattype *r_trg, typename kernel::floattype *u_trg, int n_trg) {
-    const int block_size = 32;
+    const int block_size = 64;
     const int n_blocks = (n_trg + block_size - 1) / block_size;
     using T = typename kernel::floattype;
 
