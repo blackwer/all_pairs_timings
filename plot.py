@@ -35,6 +35,19 @@ if __name__ == "__main__":
         plt.legend(["CPU Blocked", "CPU FMM", "GPU Direct", "GPU Blocked"])
         plt.xlabel('Source/Target points')
         plt.ylabel('Time (ms)')
+        plt.ylim([1E-1, 1E6])
         plt.title(f'Eval time vs source/target points for {prec}')
         plt.savefig(f"{prec}.png")
+        plt.close()
+
+        fig = plt.figure(dpi=200)
+
+        plt.semilogx(cpu_direct['ntrg'], cpu_direct['ntrg']**2 * 20.0 / cpu_direct['tot'] / 1E9)
+        plt.semilogx(gpu_direct['ntrg'], gpu_direct['ntrg']**2 * 20.0 / gpu_direct['tot'] / 1E9)
+        plt.semilogx(gpu_blocked['ntrg'], gpu_blocked['ntrg']**2 * 20.0 / gpu_blocked['tot'] / 1E9)
+
+        plt.legend(["CPU Blocked", "GPU Direct", "GPU Blocked"])
+        plt.ylabel('TeraFLOPS')
+        plt.title(f'TeraFLOPS vs source/target points for {prec}')
+        plt.savefig(f"{prec}_tflops.png")
         plt.close()
