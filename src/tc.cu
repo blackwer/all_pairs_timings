@@ -1,7 +1,7 @@
+#include <cstdio>
 #include <cstdlib>
 #include <cuda.h>
 #include <mma.h>
-#include <cstdio>
 
 #include <vector>
 
@@ -63,7 +63,7 @@ __global__ void dr2_driver(const float *r_src, const float *r_trg, float *__rest
         a_frag.x[i] = wmma::__float_to_tf32(a_frag.x[i]);
     for (int i = 0; i < b_frag.num_elements; ++i)
         b_frag.x[i] = wmma::__float_to_tf32(b_frag.x[i]);
-    
+
     // Perform the matrix multiplication
     wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
 
@@ -80,11 +80,68 @@ __global__ void dr2_driver(const float *r_src, const float *r_trg, float *__rest
     }
 }
 
+
+__global__ void dr2_driver(const double *r_src, const double *r_trg, double *__restrict__ dr_mat) {
+    constexpr int warpsize = 32;
+    constexpr int K = 4;
+    constexpr int M = 8;
+    constexpr int N = 8;
+
+    __shared__ double buffer[2 * (M * N + M) + M * N];
+    const int i_trg = blockIdx.x * blockDim.x + threadIdx.x;
+    double *A = buffer;
+    double *B = A + M * N;
+    double *rmagsrc = B + M * N;
+    double *rmagtrg = rmagsrc + M;
+
+    if (i_trg < M) {
+#pragma unroll
+        for (int i = 0; i < 3; ++i)
+            A[i_trg * K + i] = r_src[i_trg * 3 + i];
+
+#pragma unroll
+        for (int i = 0; i < 3; ++i)
+            B[i * N + i_trg] = r_trg[i_trg * 3 + i];
+
+#pragma unroll
+        for (int i = 0; i < 3; ++i)
+            rmagsrc[i_trg] += r_src[i_trg * 3 + i] * r_src[i_trg * 3 + i];
+
+#pragma unroll
+        for (int i = 0; i < 3; ++i)
+            rmagtrg[i_trg] += r_trg[i_trg * 3 + i] * r_trg[i_trg * 3 + i];
+    }
+
+    using namespace nvcuda;
+    wmma::fragment<wmma::matrix_a, M, N, K, double, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, M, N, K, double, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, M, N, K, double> c_frag;
+
+    // Initialize the output to zero
+    wmma::fill_fragment(c_frag, 0.0f);
+
+    // Load the inputs
+    wmma::load_matrix_sync(a_frag, A, K);
+    wmma::load_matrix_sync(b_frag, B, N);
+
+    // Perform the matrix multiplication
+    wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+
+    // Store the output
+    wmma::store_matrix_sync(dr_mat, c_frag, N, wmma::mem_row_major);
+
+    if (i_trg < M) {
+        for (int i_src = 0; i_src < M; ++i_src)
+            dr_mat[i_src * M + i_trg] = rmagsrc[i_src] + rmagtrg[i_trg] - 2.0 * dr_mat[i_src * M + i_trg];
+    }
+}
+
+
 template <typename T>
-T rinv_host(const T &r_src, const T &r_trg) {
+T dr2_host(const T &r_src, const T &r_trg) {
     int n_trg = r_trg.size() / 3;
     int n_src = r_src.size() / 3;
-    std::vector<float> dr2(n_src * n_trg);
+    T dr2(n_src * n_trg);
 
     for (int i = 0; i < n_src; ++i) {
         for (int j = 0; j < n_trg; ++j) {
@@ -98,42 +155,44 @@ T rinv_host(const T &r_src, const T &r_trg) {
     return dr2;
 }
 
+
 int main(int argc, char *argv[]) {
 
-    constexpr int n_trg = 16;
-    constexpr int n_src = 16;
-    std::vector<float> r_src(3 * n_src);
-    std::vector<float> r_trg(3 * n_trg);
-    std::vector<float> dr2(n_src * n_trg);
+    using prec_t = double;
+    constexpr int n_trg = 8;
+    constexpr int n_src = 8;
+    std::vector<prec_t> r_src(3 * n_src);
+    std::vector<prec_t> r_trg(3 * n_trg);
+    std::vector<prec_t> dr2(n_src * n_trg);
 
-    for (int i = 0; i < n_src; ++i)
-        r_src[i * 3] = drand48();
+    for (int i = 0; i < n_src * 3; ++i)
+        r_src[i] = drand48();
 
-    for (int i = 0; i < n_trg; ++i)
-        r_trg[i * 3] = drand48();
+    for (int i = 0; i < n_trg * 3; ++i)
+        r_trg[i] = drand48();
 
-    float *x_src_d, *x_trg_d, *dx_d;
+    prec_t *x_src_d, *x_trg_d, *dx_d;
 
-    checkCudaErrors(cudaMalloc((void **)&x_src_d, r_src.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void **)&x_trg_d, r_trg.size() * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void **)&dx_d, dr2.size() * sizeof(float)));
+    checkCudaErrors(cudaMalloc((void **)&x_src_d, r_src.size() * sizeof(prec_t)));
+    checkCudaErrors(cudaMalloc((void **)&x_trg_d, r_trg.size() * sizeof(prec_t)));
+    checkCudaErrors(cudaMalloc((void **)&dx_d, dr2.size() * sizeof(prec_t)));
 
-    checkCudaErrors(cudaMemcpy(x_src_d, r_src.data(), r_src.size() * sizeof(float), cudaMemcpyHostToDevice));
-    checkCudaErrors(cudaMemcpy(x_trg_d, r_trg.data(), r_trg.size() * sizeof(float), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(x_src_d, r_src.data(), r_src.size() * sizeof(prec_t), cudaMemcpyHostToDevice));
+    checkCudaErrors(cudaMemcpy(x_trg_d, r_trg.data(), r_trg.size() * sizeof(prec_t), cudaMemcpyHostToDevice));
 
     dr2_driver<<<1, 32>>>(x_src_d, x_trg_d, dx_d);
 
-    checkCudaErrors(cudaMemcpy(dr2.data(), dx_d, dr2.size() * sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(dr2.data(), dx_d, dr2.size() * sizeof(prec_t), cudaMemcpyDeviceToHost));
 
     cudaFree(x_src_d);
     cudaFree(x_trg_d);
 
-    auto dr2_h = rinv_host(r_src, r_trg);
-    for (int i = 0; i < 16; ++i) {
-        for (int j = 0; j < 16; ++j) {
-            float err = fabs(1.0 - dr2_h[i * 16 + j] / dr2[i * 16 + j]);
-            if (err > 1E-3)
-                printf("%d %d %g %g %g\n", i, j, err, dr2[i * 16 + j], dr2_h[i * 16 + j]);
+    auto dr2_h = dr2_host(r_src, r_trg);
+    for (int i = 0; i < n_src; ++i) {
+        for (int j = 0; j < n_trg; ++j) {
+            prec_t err = fabs(1.0 - dr2_h[i * n_src + j] / dr2[i * n_src + j]);
+            printf("%d %d %0.10g %0.10g %0.10g %.10g\n", i, j, err, dr2[i * n_src + j], dr2_h[i * n_src + j],
+                   dr2_h[i * n_src + j] - dr2[i * n_src + j]);
         }
     }
 
