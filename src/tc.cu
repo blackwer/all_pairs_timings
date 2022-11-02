@@ -62,7 +62,7 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
         wmma::load_matrix_sync(r_trg_tile[trg_tile], r_trg + (n_trg_tiles_per_warp * warp_id + trg_tile) * M * 4, K);
 
     for (int src_tile = 0; src_tile < n_src_tiles; ++src_tile) {
-        int subtile = src_tile % 4;
+        int subtile = src_tile % n_trg_tiles_per_block;
         if (subtile == 0) {
             rmagsrc[threadIdx.x] = 0.0;
 #pragma unroll
