@@ -28,57 +28,12 @@ __global__ void warmup() {
     ib += ia + tid;
 }
 
-__global__ void dr2_driver_onemat(const double *r_src, const double *r_trg, double *__restrict__ dr_mat) {
-    constexpr int K = 4;
-    constexpr int M = 8;
-    constexpr int N = 8;
-
-    __shared__ double buffer[M + N];
-    const int i_thr = blockIdx.x * blockDim.x + threadIdx.x;
-    double *rmagsrc = buffer;
-    double *rmagtrg = rmagsrc + M;
-
-    if (i_thr < M) {
-#pragma unroll
-        for (int i = 0; i < 3; ++i)
-            rmagsrc[i_thr] += r_src[i_thr * 4 + i] * r_src[i_thr * 4 + i];
-
-#pragma unroll
-        for (int i = 0; i < 3; ++i)
-            rmagtrg[i_thr] += r_trg[i_thr * 4 + i] * r_trg[i_thr * 4 + i];
-    }
-
-    using namespace nvcuda;
-    wmma::fragment<wmma::matrix_a, M, N, K, double, wmma::row_major> a_frag;
-    wmma::fragment<wmma::matrix_b, M, N, K, double, wmma::col_major> b_frag;
-    wmma::fragment<wmma::accumulator, M, N, K, double> c_frag;
-
-    // Initialize the output to zero
-    wmma::fill_fragment(c_frag, 0.0f);
-
-    // Load the inputs
-    wmma::load_matrix_sync(a_frag, r_trg, K);
-    wmma::load_matrix_sync(b_frag, r_src, K);
-
-    // Perform the matrix multiplication
-    wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
-
-    // Store the output
-    wmma::store_matrix_sync(dr_mat, c_frag, N, wmma::mem_row_major);
-
-    if (i_thr < M) {
-        for (int i_src = 0; i_src < M; ++i_src)
-            dr_mat[i_thr * M + i_src] = rmagsrc[i_src] + rmagtrg[i_thr] - 2.0 * dr_mat[i_thr * M + i_src];
-    }
-}
-
 __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg, int n_trg, double *__restrict__ u) {
     constexpr int K = 4; // TC K dimension: holds x,y,z,0 of coords
     constexpr int M = 8; // TC M dimension: holds M trg coords
     constexpr int N = 8; // TC N dimension: holds N src coords
     constexpr int n_trg_tiles_per_warp = warp_size / N;
     constexpr int n_trg_tiles_per_block = n_warps_per_block * n_trg_tiles_per_warp;
-    constexpr int n_src_tiles_per_warp = warp_size / N;
 
     constexpr int block_size = warp_size * n_warps_per_block;
     constexpr int tile_shmem_size = M * N;
