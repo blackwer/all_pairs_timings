@@ -75,7 +75,8 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
 
     constexpr int A_B_size = M * K;
     constexpr int C_size = M * N;
-    constexpr int tile_shmem_size = n_trg_tiles_per_block * (M * K + M * N);
+    constexpr int trg_buf_size = M * N;
+    constexpr int tile_shmem_size = n_trg_tiles_per_block * trg_buf_size;
     constexpr int SHMEM_SIZE = n_src_tiles_per_block * tile_shmem_size + 2 * warp_size;
 
     const int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -89,52 +90,44 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
     double *rmagsrc = rmagtrg + warp_size;
 
     using namespace nvcuda;
-    wmma::fragment<wmma::matrix_a, M, N, K, double, wmma::row_major> r_trg_tile_frag;
+    wmma::fragment<wmma::matrix_a, M, N, K, double, wmma::row_major> r_trg_tile[n_trg_tiles_per_block];
 
     u[thread_id] = 0.0;
-    for (int trg_tile = 0; trg_tile < n_trg_tiles_per_block; ++trg_tile) {
-        wmma::load_matrix_sync(r_trg_tile_frag, r_trg + trg_tile * M * 4, K);
 
-        // FIXME
-        if (threadIdx.x < M) {
-            rmagtrg[threadIdx.x] = 0.0;
-#pragma unroll
-            for (int i = 0; i < 3; ++i)
-                rmagtrg[threadIdx.x] +=
-                    r_trg[(trg_tile * M + threadIdx.x) * 4 + i] * r_trg[(trg_tile * M + threadIdx.x) * 4 + i];
-        }
+    rmagtrg[threadIdx.x] = 0.0;
+    for (int i = 0; i < 3; ++i)
+        rmagtrg[threadIdx.x] += r_trg[thread_id * 4 + i] * r_trg[thread_id * 4 + i];
 
-        for (int src_tile = 0; src_tile < n_src_tiles; ++src_tile) {
-            if (threadIdx.x < N) {
-                rmagsrc[threadIdx.x] = 0.0;
-                for (int i = 0; i < 3; ++i)
-                    rmagsrc[threadIdx.x] +=
-                        r_src[src_tile * 4 * N + threadIdx.x * 4 + i] * r_src[src_tile * 4 * N + threadIdx.x * 4 + i];
-            }
+    for (int trg_tile = 0; trg_tile < n_trg_tiles_per_block; ++trg_tile)
+        wmma::load_matrix_sync(r_trg_tile[trg_tile], r_trg + trg_tile * M * 4, K);
 
-            wmma::fragment<wmma::matrix_b, M, N, K, double, wmma::col_major> r_src_tile;
-            wmma::fragment<wmma::accumulator, M, N, K, double> r_trg_src_outer;
+    for (int src_tile = 0; src_tile < n_src_tiles; ++src_tile) {
+        rmagsrc[threadIdx.x] = 0.0;
+        for (int i = 0; i < 3; ++i)
+            rmagsrc[threadIdx.x] +=
+                r_src[src_tile * 4 * N + threadIdx.x * 4 + i] * r_src[src_tile * 4 * N + threadIdx.x * 4 + i];
 
+        wmma::fragment<wmma::matrix_b, M, N, K, double, wmma::col_major> r_src_tile;
+        wmma::fragment<wmma::accumulator, M, N, K, double> r_trg_src_outer[4];
+
+        // Load source fragment for current source tile
+        wmma::load_matrix_sync(r_src_tile, r_src + (src_tile * N) * 4, K);
+
+        for (int trg_tile = 0; trg_tile < n_trg_tiles_per_block; ++trg_tile) {
             // Initialize the output to zero
-            wmma::fill_fragment(r_trg_src_outer, 0.0f);
-
-            // Load source fragment for current tile
-            wmma::load_matrix_sync(r_src_tile, r_src + (src_tile * N) * 4, K);
+            wmma::fill_fragment(r_trg_src_outer[trg_tile], 0.0f);
 
             // Perform the matrix multiplication
-            wmma::mma_sync(r_trg_src_outer, r_trg_tile_frag, r_src_tile, r_trg_src_outer);
+            wmma::mma_sync(r_trg_src_outer[trg_tile], r_trg_tile[trg_tile], r_src_tile, r_trg_src_outer[trg_tile]);
 
             // Store the output
-            wmma::store_matrix_sync(buffer, r_trg_src_outer, N, wmma::mem_row_major);
+            wmma::store_matrix_sync(buffer + trg_buf_size * trg_tile, r_trg_src_outer[trg_tile], N,
+                                    wmma::mem_row_major);
+        }
 
-            // FIXME
-            if (threadIdx.x < M) {
-                for (int i_src = 0; i_src < 8; ++i_src) {
-                    int i_src_actual = i_src + src_tile * N;
-                    double dr2 = rmagsrc[i_src] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
-                    u[trg_tile * N + thread_id] += dr2 == 0.0 ? 0.0 : rsqrt(dr2);
-                }
-            }
+        for (int i_src = 0; i_src < 8; ++i_src) {
+            double dr2 = rmagsrc[i_src] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
+            u[thread_id] += dr2 == 0.0 ? 0.0 : rsqrt(dr2);
         }
     }
 }
