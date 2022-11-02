@@ -62,8 +62,9 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
         wmma::load_matrix_sync(r_trg_tile[trg_tile], r_trg + (n_trg_tiles_per_warp * warp_id + trg_tile) * M * 4, K);
 
     for (int src_tile = 0; src_tile < n_src_tiles; ++src_tile) {
-        rmagsrc[threadIdx.x] = 0.0;
-        if (threadIdx.x < 8) {
+        int subtile = src_tile % 4;
+        if (subtile == 0) {
+            rmagsrc[threadIdx.x] = 0.0;
 #pragma unroll
             for (int i = 0; i < 3; ++i)
                 rmagsrc[threadIdx.x] +=
@@ -93,7 +94,7 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
 
 #pragma unroll
         for (int i_src = 0; i_src < 8; ++i_src) {
-            double dr2 = rmagsrc[i_src] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
+            double dr2 = rmagsrc[i_src + subtile * 8] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
             u[thread_id] += dr2 == 0.0 ? 0.0 : rsqrt(dr2);
         }
     }
