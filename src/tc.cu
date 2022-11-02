@@ -129,6 +129,8 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
                                     wmma::mem_row_major);
         }
 
+        __syncthreads();
+
         for (int i_src = 0; i_src < 8; ++i_src) {
             double dr2 = rmagsrc[i_src] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
             u[thread_id] += dr2 == 0.0 ? 0.0 : rsqrt(dr2);
@@ -157,8 +159,8 @@ T driver_host(const T &r_src, const T &r_trg) {
 
 int main(int argc, char *argv[]) {
     using prec_t = double;
-    constexpr int n_trg = 32;
-    constexpr int n_src = 32;
+    constexpr int n_trg = 1024 * 128;
+    constexpr int n_src = 1024 * 128;
     std::vector<prec_t> r_src(4 * n_src);
     std::vector<prec_t> r_trg(4 * n_trg);
     std::vector<prec_t> sol(n_trg);
@@ -172,7 +174,6 @@ int main(int argc, char *argv[]) {
             r_trg[i * 4 + j] = drand48();
 
     prec_t *r_src_d, *r_trg_d, *sol_d;
-
     warmup<<<1024, 64>>>();
     cudaDeviceSynchronize();
 
@@ -196,10 +197,12 @@ int main(int argc, char *argv[]) {
 
     timer.stop();
 
-    auto sol_h = driver_host(r_src, r_trg);
-    for (int j = 0; j < n_trg; ++j) {
-        prec_t err = fabs(1.0 - sol_h[j] / sol[j]);
-        printf("%d %0.10g %0.10g %.10g %.10g\n", j, err, sol[j], sol_h[j], sol_h[j] - sol[j]);
+    if (n_trg <= 128) {
+        auto sol_h = driver_host(r_src, r_trg);
+        for (int j = 0; j < n_trg; ++j) {
+            prec_t err = fabs(1.0 - sol_h[j] / sol[j]);
+            printf("%d %0.10g %0.10g %.10g %.10g\n", j, err, sol[j], sol_h[j], sol_h[j] - sol[j]);
+        }
     }
 
     printf("timing: %g\n", timer.mSec());
