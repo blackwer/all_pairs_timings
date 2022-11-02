@@ -79,7 +79,6 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
     constexpr int n_trg_tiles_per_warp = warp_size / N;
     constexpr int n_trg_tiles_per_block = n_warps_per_block * n_trg_tiles_per_warp;
     constexpr int n_src_tiles_per_warp = warp_size / N;
-    constexpr int n_src_tiles_per_block = n_warps_per_block * n_src_tiles_per_warp;
 
     constexpr int block_size = warp_size * n_warps_per_block;
     constexpr int tile_shmem_size = M * N;
@@ -98,18 +97,23 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
 
     u[thread_id] = 0.0;
     rmagtrg[threadIdx.x] = 0.0;
+
+#pragma unroll
     for (int i = 0; i < 3; ++i)
         rmagtrg[threadIdx.x] += r_trg[thread_id * 4 + i] * r_trg[thread_id * 4 + i];
 
+#pragma unroll
     for (int trg_tile = 0; trg_tile < n_trg_tiles_per_block; ++trg_tile)
         wmma::load_matrix_sync(r_trg_tile[trg_tile], r_trg + (n_trg_tiles_per_warp * warp_id + trg_tile) * M * 4, K);
 
     for (int src_tile = 0; src_tile < n_src_tiles; ++src_tile) {
         rmagsrc[threadIdx.x] = 0.0;
-        if (threadIdx.x < 8)
+        if (threadIdx.x < 8) {
+#pragma unroll
             for (int i = 0; i < 3; ++i)
                 rmagsrc[threadIdx.x] +=
                     r_src[src_tile * 4 * N + threadIdx.x * 4 + i] * r_src[src_tile * 4 * N + threadIdx.x * 4 + i];
+        }
 
         wmma::fragment<wmma::matrix_b, M, N, K, double, wmma::col_major> r_src_tile;
         wmma::fragment<wmma::accumulator, M, N, K, double> r_trg_src_outer[4];
@@ -117,6 +121,7 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
         // Load source fragment for current source tile
         wmma::load_matrix_sync(r_src_tile, r_src + (src_tile * N) * 4, K);
 
+#pragma unroll
         for (int trg_tile = 0; trg_tile < n_trg_tiles_per_block; ++trg_tile) {
             // Initialize the output to zero
             wmma::fill_fragment(r_trg_src_outer[trg_tile], 0.0f);
@@ -131,6 +136,7 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
 
         __syncthreads();
 
+#pragma unroll
         for (int i_src = 0; i_src < 8; ++i_src) {
             double dr2 = rmagsrc[i_src] + rmagtrg[threadIdx.x] - 2.0 * buffer[threadIdx.x * N + i_src];
             u[thread_id] += dr2 == 0.0 ? 0.0 : rsqrt(dr2);
@@ -174,7 +180,7 @@ int main(int argc, char *argv[]) {
             r_trg[i * 4 + j] = drand48();
 
     prec_t *r_src_d, *r_trg_d, *sol_d;
-    warmup<<<1024, 64>>>();
+    warmup<<<2048, 128>>>();
     cudaDeviceSynchronize();
 
     checkCudaErrors(cudaMalloc((void **)&r_src_d, r_src.size() * sizeof(prec_t)));
