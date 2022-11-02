@@ -81,21 +81,17 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
     constexpr int n_src_tiles_per_warp = warp_size / N;
     constexpr int n_src_tiles_per_block = n_warps_per_block * n_src_tiles_per_warp;
 
-    constexpr int A_B_size = M * K;
-    constexpr int C_size = M * N;
-    constexpr int trg_buf_size = M * N;
-    constexpr int tile_shmem_size = n_trg_tiles_per_block * trg_buf_size;
-    constexpr int SHMEM_SIZE = n_src_tiles_per_block * tile_shmem_size + 2 * warp_size;
+    constexpr int block_size = warp_size * n_warps_per_block;
+    constexpr int tile_shmem_size = M * N;
+    constexpr int SHMEM_SIZE = n_trg_tiles_per_block * tile_shmem_size + 2 * block_size;
 
     const int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
     const int warp_id = thread_id / warp_size;
-    const int base_tile_id = threadIdx.x / M;
-    const int subtile_id = threadIdx.x % M;
     const int n_src_tiles = n_src / N;
 
     __shared__ double buffer[SHMEM_SIZE];
-    double *rmagtrg = buffer + SHMEM_SIZE - 2 * warp_size;
-    double *rmagsrc = rmagtrg + warp_size;
+    double *rmagtrg = buffer + SHMEM_SIZE - 2 * block_size;
+    double *rmagsrc = rmagtrg + block_size;
 
     using namespace nvcuda;
     wmma::fragment<wmma::matrix_a, M, N, K, double, wmma::row_major> r_trg_tile[n_trg_tiles_per_block];
@@ -129,7 +125,7 @@ __global__ void driver_bulk(const double *r_src, int n_src, const double *r_trg,
             wmma::mma_sync(r_trg_src_outer[trg_tile], r_trg_tile[trg_tile], r_src_tile, r_trg_src_outer[trg_tile]);
 
             // Store the output
-            wmma::store_matrix_sync(buffer + trg_buf_size * trg_tile, r_trg_src_outer[trg_tile], N,
+            wmma::store_matrix_sync(buffer + tile_shmem_size * trg_tile, r_trg_src_outer[trg_tile], N,
                                     wmma::mem_row_major);
         }
 
@@ -161,8 +157,8 @@ T driver_host(const T &r_src, const T &r_trg) {
 
 int main(int argc, char *argv[]) {
     using prec_t = double;
-    constexpr int n_trg = 1024 * 128;
-    constexpr int n_src = 1024 * 128;
+    constexpr int n_trg = 32;
+    constexpr int n_src = 32;
     std::vector<prec_t> r_src(4 * n_src);
     std::vector<prec_t> r_trg(4 * n_trg);
     std::vector<prec_t> sol(n_trg);
@@ -200,11 +196,11 @@ int main(int argc, char *argv[]) {
 
     timer.stop();
 
-    // auto sol_h = driver_host(r_src, r_trg);
-    // for (int j = 0; j < n_trg; ++j) {
-    //     prec_t err = fabs(1.0 - sol_h[j] / sol[j]);
-    //     printf("%d %0.10g %0.10g %.10g %.10g\n", j, err, sol[j], sol_h[j], sol_h[j] - sol[j]);
-    // }
+    auto sol_h = driver_host(r_src, r_trg);
+    for (int j = 0; j < n_trg; ++j) {
+        prec_t err = fabs(1.0 - sol_h[j] / sol[j]);
+        printf("%d %0.10g %0.10g %.10g %.10g\n", j, err, sol[j], sol_h[j], sol_h[j] - sol[j]);
+    }
 
     printf("timing: %g\n", timer.mSec());
     return 0;
